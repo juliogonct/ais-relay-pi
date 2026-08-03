@@ -1,0 +1,55 @@
+# =====================================================================
+# ais-relay — configuración (LUGAR ÚNICO)
+# =====================================================================
+# Copia este fichero a /etc/ais-relay/ais-relay.conf y edita SOLO este
+# fichero con los valores de tu instalación. La unidad systemd lo carga
+# automáticamente (EnvironmentFile).
+#
+#   sudo mkdir -p /etc/ais-relay
+#   sudo cp deploy/ais-relay.conf.example /etc/ais-relay/ais-relay.conf
+#   sudo nano /etc/ais-relay/ais-relay.conf
+#   sudo systemctl restart ais-relay
+#
+# Formato: CLAVE=valor  (una por línea). Las líneas con # son comentarios.
+
+# ---------------------------------------------------------------------
+# Entrada NMEA (desde tu decodificador AIS, p. ej. AIS-catcher)
+# ---------------------------------------------------------------------
+AIS_RELAY_UDP_HOST=127.0.0.1
+AIS_RELAY_UDP_PORT=10110
+# 0 = solo loopback (recomendado). 1 = permitir decodificador remoto (inseguro).
+AIS_RELAY_UDP_ALLOW_EXTERNAL=0
+
+# ---------------------------------------------------------------------
+# Salida TCP (a tus clientes)
+# ---------------------------------------------------------------------
+# "0.0.0.0" = LAN + VPN. Para SOLO VPN, pon la IP de tu overlay (p. ej. 10.0.0.5).
+AIS_RELAY_TCP_HOST=0.0.0.0
+AIS_RELAY_TCP_PORT=10110
+
+# ---------------------------------------------------------------------
+# Buffer y replay
+# ---------------------------------------------------------------------
+AIS_RELAY_RETENTION_SEC=3600
+AIS_RELAY_MAX_ENTRIES=200000
+AIS_RELAY_REPLAY_ON_CONNECT_SEC=30
+AIS_RELAY_MAX_REPLAY_ENTRIES=20000
+
+# ---------------------------------------------------------------------
+# Protección (clientes lentos / abuso de conexiones)
+# ---------------------------------------------------------------------
+AIS_RELAY_MAX_CLIENTS=64
+AIS_RELAY_SEND_TIMEOUT_SEC=5
+
+# ---------------------------------------------------------------------
+# Acceso por token (OPCIONAL). Vacío = confiar en ACL/firewall de la red.
+# Si lo defines, los clientes deben enviar "AUTH <token>" como 1ª línea.
+# ---------------------------------------------------------------------
+AIS_RELAY_TOKEN=
+
+# ---------------------------------------------------------------------
+# Persistencia a disco (OPCIONAL). Vacío = sin volcado a disco.
+# ---------------------------------------------------------------------
+AIS_RELAY_LOG_FILE=
+AIS_RELAY_LOG_MAX_MB=64
+AIS_RELAY_LOG_BACKUPS=2

@@ -1,0 +1,22 @@
+[Unit]
+Description=AIS NMEA relay with ring-buffer replay (UDP -> TCP)
+After=ais-catcher.service
+Wants=ais-catcher.service
+
+[Service]
+# Sin privilegios: usuario efímero (DynamicUser) + restricciones. No corre como root.
+DynamicUser=yes
+PrivateTmp=yes
+NoNewPrivileges=yes
+ExecStart=/usr/bin/python3 /usr/local/bin/ais-relay.py
+# Configuración en UN ÚNICO fichero: /etc/ais-relay/ais-relay.conf
+# (copia de deploy/ais-relay.conf.example y edita ese fichero).
+# El prefijo "-" hace que sea opcional: si no existe, se usan los valores
+# por defecto del propio script.
+EnvironmentFile=-/etc/ais-relay/ais-relay.conf
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+
