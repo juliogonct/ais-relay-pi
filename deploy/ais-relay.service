@@ -1,7 +1,7 @@
 [Unit]
 Description=AIS NMEA relay with ring-buffer replay (UDP -> TCP)
-After=ais-catcher.service
-Wants=ais-catcher.service
+After=network-online.target
+Wants=network-online.target
 
 [Service]
 # Runs without privileges: ephemeral user (DynamicUser) + restrictions. Not root.

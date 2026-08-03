@@ -6,12 +6,13 @@ NMEA stream over UDP, re-serves it over TCP to multiple clients, and recovers
 data captured during a network outage thanks to an in-memory ring with replay
 on reconnect.
 
-It bridges an AIS decoder (e.g. **AIS-catcher**) and any consumer (OpenCPN,
-`nc`, scripts, services that keep per-vessel state such as a Redis store) over
-a private or public network.
+It bridges an AIS decoder and any consumer (OpenCPN, `nc`, scripts, services
+that keep per-vessel state such as a Redis store) over a private or public
+network. The reference deployment for this project uses **AIS-catcher** as the
+decoder, but AIS-catcher is not a runtime dependency of the relay.
 
 ```
-SDR AIS ──► decoder (AIS-catcher) ──UDP :10110──► ais-relay-pi
+SDR AIS ──► decoder (AIS-catcher in the reference setup) ──UDP :10110──► ais-relay-pi
                                                   ├─ real-time pipe-through
                                                   ├─ in-memory ring (N)
                                                   └─ TCP :10110 ──► clients
@@ -36,6 +37,28 @@ SDR AIS ──► decoder (AIS-catcher) ──UDP :10110──► ais-relay-pi
 - **Hardened**: bounded replay (CPU/memory), bounded connections and slow-client
   handling, disk-log rotation, and runs without privileges.
 - **No external dependencies**: only the Python 3 standard library.
+
+## Reference deployment and supported environment
+
+The original/reference deployment runs on a Raspberry Pi receiving AIS with
+AIS-catcher. AIS-catcher sends newline-delimited NMEA datagrams to the relay's
+UDP input. This documents the tested integration; the relay itself does not
+launch, configure, or depend on AIS-catcher.
+
+Any decoder can be used if it sends NMEA over UDP to the configured input. The
+relay does not decode AIS, validate vessel identity, or require an SDR.
+
+The included installer targets:
+
+- Linux with systemd (Debian, Raspberry Pi OS, Ubuntu, or equivalent).
+- Python 3.8 or newer.
+- systemd 235 or newer for the hardening directives used by the unit.
+- Bash and standard GNU/Linux utilities (`install`, `systemctl`, `mkdir`, `rm`).
+- ARM, ARM64, x86, and x86_64 systems are supported by the Python code.
+
+The installer is not intended for Windows or macOS. The Python program can be
+run manually on other Unix-like systems, but the supplied deployment unit and
+installer are specifically Linux/systemd based.
 
 ## Quick install
 
