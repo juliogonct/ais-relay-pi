@@ -35,7 +35,8 @@ fi
 
 # 4) Enable/start
 systemctl daemon-reload
-systemctl enable --now ais-relay.service >/dev/null 2>&1 || systemctl restart ais-relay.service
+systemctl enable ais-relay.service >/dev/null 2>&1
+systemctl restart ais-relay.service
 echo "OK ais-relay enabled."
 echo ""
 echo "Next step: edit $CONF and, if changed, run:"

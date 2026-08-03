@@ -34,6 +34,12 @@ AIS_RELAY_RETENTION_SEC=3600
 AIS_RELAY_MAX_ENTRIES=200000
 AIS_RELAY_REPLAY_ON_CONNECT_SEC=30
 AIS_RELAY_MAX_REPLAY_ENTRIES=20000
+# Byte limits keep memory and replay responses bounded even with large UDP payloads.
+AIS_RELAY_MAX_BUFFER_BYTES=67108864
+AIS_RELAY_MAX_REPLAY_BYTES=2097152
+AIS_RELAY_MAX_CLIENT_QUEUE_BYTES=2097152
+AIS_RELAY_MAX_AUTH_LINE_BYTES=4096
+AIS_RELAY_MAX_REPLAY_REQUESTS_PER_MINUTE=30
 
 # ---------------------------------------------------------------------
 # Protection (slow clients / connection abuse)
@@ -46,9 +52,11 @@ AIS_RELAY_SEND_TIMEOUT_SEC=5
 # If set, clients must send "AUTH <token>" as the first line.
 # ---------------------------------------------------------------------
 AIS_RELAY_TOKEN=
+AIS_RELAY_AUTH_TIMEOUT=5
 
 # ---------------------------------------------------------------------
 # Disk persistence (OPTIONAL). Empty = no disk dump.
+# Recommended path when enabled: /var/lib/ais-relay/stream.jsonl
 # ---------------------------------------------------------------------
 AIS_RELAY_LOG_FILE=
 AIS_RELAY_LOG_MAX_MB=64

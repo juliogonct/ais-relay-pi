@@ -25,8 +25,10 @@ SDR AIS ──► decoder (AIS-catcher) ──UDP :10110──► ais-relay-pi
   buffer is re-sent (`REPLAY_ON_CONNECT_SEC`, 30 s by default ≈ margin over the
   outage) and then the live stream continues. Data captured during an outage is
   not lost.
-- **Exact replay on demand**: a client can send `REPLAY <seq>` to receive only
-  messages with a higher sequence number (no duplicates).
+- **Bounded replay on demand**: a stateful client can send `REPLAY <seq>` to
+  request messages after a sequence marker. The request is rate-limited and
+  bounded by both message count and bytes. NMEA remains unchanged, so clients
+  that do not receive sequence metadata should use client-side deduplication.
 - **Client-side deduplication**: the replay is not exact by default; consumers
   that keep state (e.g. by MMSI) filter duplicates idempotently.
 - **Optional auth**: token (`AUTH <token>` as the first line) when network-only
@@ -68,8 +70,10 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now ais-relay.service
 ```
 
-It can also run directly (with configuration passed as shell environment
-variables, or by creating `/etc/ais-relay/ais-relay.conf`):
+It can also run directly. In that mode, provide configuration through shell
+environment variables or set `AIS_RELAY_CONFIG_FILE` to a readable config
+file; the systemd unit is the recommended way to use the root-owned
+`/etc/ais-relay/ais-relay.conf`.
 
 ```bash
 python3 ais-relay.py
@@ -93,8 +97,14 @@ script defaults are used.
 | `AIS_RELAY_MAX_ENTRIES` | `200000` | Max messages kept in memory |
 | `AIS_RELAY_REPLAY_ON_CONNECT_SEC` | `30` | Minimal replay on each reconnect (s) |
 | `AIS_RELAY_TOKEN` | *(empty)* | If set, clients must send `AUTH <token>` |
+| `AIS_RELAY_AUTH_TIMEOUT` | `5` | Authentication/control read timeout (s) |
 | `AIS_RELAY_LOG_FILE` | *(empty)* | Persist the stream to disk (JSONL) and repopulate the buffer on startup |
 | `AIS_RELAY_MAX_REPLAY_ENTRIES` | `20000` | Max messages per replay (prevents dumping the whole ring) |
+| `AIS_RELAY_MAX_BUFFER_BYTES` | `67108864` | Max in-memory ring payload (bytes) |
+| `AIS_RELAY_MAX_REPLAY_BYTES` | `2097152` | Max payload per replay (bytes) |
+| `AIS_RELAY_MAX_CLIENT_QUEUE_BYTES` | `2097152` | Max queued payload per client (bytes) |
+| `AIS_RELAY_MAX_AUTH_LINE_BYTES` | `4096` | Max authentication line size |
+| `AIS_RELAY_MAX_REPLAY_REQUESTS_PER_MINUTE` | `30` | Replay requests allowed per client/minute |
 | `AIS_RELAY_LOG_MAX_MB` | `64` | Max size (MB) of the disk JSONL before rotation. Disable by leaving `LOG_FILE` empty |
 | `AIS_RELAY_LOG_BACKUPS` | `2` | Rotated disk-log copies |
 | `AIS_RELAY_MAX_CLIENTS` | `64` | Max simultaneous TCP connections (beyond is rejected) |
@@ -112,15 +122,16 @@ script defaults are used.
   nc <host> <port>
   ```
 
-- **Stateful client** (e.g. Redis by MMSI): connect and, for exact gap replay,
-  send the last processed sequence number:
+- **Stateful client** (e.g. Redis by MMSI): if it has a sequence marker from a
+  trusted side channel, it can request a bounded gap replay:
 
   ```
   REPLAY <last_processed_seq>
   ```
 
-  and keep the stream open. (If the server emits `@SEQ <n>` as an optional
-  control line, the client learns the `seq`s for future reconnects.)
+  and keep the stream open. The relay does not add sequence metadata to NMEA;
+  ordinary clients should use the minimal time replay plus client-side
+  deduplication.
 
 - If `AIS_RELAY_TOKEN` is active, the first line must be `AUTH <token>`.
 
@@ -149,7 +160,7 @@ Access options:
 - **By network:** the filter is set by the infrastructure (overlay ACL or
   firewall). This is the default.
 - **By token:** set `AIS_RELAY_TOKEN` and clients must send `AUTH <token>` as
-  the first line.
+  the first line. Authentication is line-framed and bounded.
 
 ## Limits and slow clients
 
@@ -165,11 +176,15 @@ everyone else**. Configurable limits prevent this:
 
 CPU/memory and disk are also bounded:
 
-- `AIS_RELAY_MAX_REPLAY_ENTRIES` (20000): any replay (reconnect or
-  `REPLAY <seq>`) is capped to the N most recent messages, so a client cannot
-  force a full ring dump over and over.
+- `AIS_RELAY_MAX_REPLAY_ENTRIES` (20000) and `AIS_RELAY_MAX_REPLAY_BYTES`
+  (2 MiB): any replay (reconnect or `REPLAY <seq>`) is capped by both count and
+  bytes, so a client cannot force a large ring dump over and over.
 - The in-memory ring is bounded by `AIS_RELAY_MAX_ENTRIES` +
-  `AIS_RELAY_RETENTION_SEC`.
+  `AIS_RELAY_RETENTION_SEC` + `AIS_RELAY_MAX_BUFFER_BYTES`.
+- Each client has a bounded output queue (`AIS_RELAY_MAX_CLIENT_QUEUE_BYTES`).
+  A slow client is dropped without blocking UDP ingestion or other clients.
+- Replay requests are rate-limited by
+  `AIS_RELAY_MAX_REPLAY_REQUESTS_PER_MINUTE`.
 - The disk JSONL rotates at `AIS_RELAY_LOG_MAX_MB`, keeping
   `AIS_RELAY_LOG_BACKUPS` copies (`base`, `.1`, …): disk never grows unbounded.
 
@@ -191,12 +206,20 @@ not recommended to disable these limits on networks with uncontrolled clients.
   copying the whole ring; combined with `AIS_RELAY_MAX_REPLAY_ENTRIES` it avoids
   CPU/memory abuse.
 - **Limits:** slow clients (`SEND_TIMEOUT_SEC`), connection count
-  (`MAX_CLIENTS`) and disk (`LOG_MAX_MB`/`LOG_BACKUPS`).
+  (`MAX_CLIENTS`), memory/replay bytes and disk (`LOG_MAX_MB`/`LOG_BACKUPS`).
+- **Systemd resource boundaries:** the unit applies `TasksMax`, `MemoryMax`,
+  `CPUQuota`, `ProtectHome`, `ProtectSystem`, `PrivateDevices`, restricted
+  address families, `RestrictRealtime`, `RestrictSUIDSGID`, and
+  `LockPersonality`. It also creates `/var/lib/ais-relay` as the recommended
+  state directory for optional disk logging.
 
 > Note: the stream is **without TLS** (plain NMEA). On a trusted private
 > network this is acceptable; if it ever crosses an untrusted network, consider
 > encrypting (TLS/mTLS) or restricting it to the overlay with an ACL — this is
 > an optional improvement.
+
+The unit also rate-limits journald messages per service. The JSONL AIS stream,
+when enabled, is separate from journald and is rotated by the relay.
 
 ## Project structure
 
@@ -208,6 +231,13 @@ deploy/install.sh            Installer
 deploy/uninstall.sh          Uninstaller
 tests/                       Test clients
 ```
+
+### Direct execution
+
+When running `python3 ais-relay.py` directly, the program reads
+`/etc/ais-relay/ais-relay.conf` itself unless variables are already present in
+the environment. The systemd unit also supplies the same file through
+`EnvironmentFile`.
 
 ## License
 

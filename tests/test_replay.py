@@ -7,6 +7,7 @@ Usage:
 Defaults: host=127.0.0.1, port=10110
 """
 import socket, sys, time
+import os
 
 
 def _arg(i, default):
@@ -15,6 +16,7 @@ def _arg(i, default):
 
 HOST = _arg(1, "127.0.0.1")
 PORT = int(_arg(2, "10110"))
+UDP_PORT = int(os.environ.get("AIS_RELAY_UDP_PORT", str(PORT)))
 
 
 def read_lines(conn, seconds):
@@ -40,32 +42,45 @@ def read_lines(conn, seconds):
     return lines
 
 
-# Phase 1: initial connection, read 4s
+def send_udp(lines, port):
+    sender = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    for line in lines:
+        sender.sendto(line, ("127.0.0.1", port))
+    sender.close()
+
+
+# Phase 1: initial connection, read 1s
 c1 = socket.create_connection((HOST, PORT), timeout=8)
-a = read_lines(c1, 4)
+a = read_lines(c1, 1)
 c1.close()
 print(f"Phase 1: {len(a)} lines received (initial read)")
 
-# Phase 2: outage WITHOUT connection (data keeps entering the buffer)
-time.sleep(3)
-print("Phase 2: 3s gap without connection (data only to the buffer)")
+# Phase 2: inject identifiable messages while disconnected
+gap = [f"!AIVDM,1,1,,A,TEST{i:02d},0*00\r\n".encode() for i in range(3)]
+send_udp(gap, UDP_PORT)
+print("Phase 2: injected 3 identifiable messages while disconnected")
 
 # Phase 3: reconnect; the replay should return the recent window
 c2 = socket.create_connection((HOST, PORT), timeout=8)
 t_replay = time.time()
-b = read_lines(c2, 2)
+b = read_lines(c2, 1)
 c2.close()
 replay_time = time.time() - t_replay
-print(f"Phase 3: within the first {replay_time:.1f}s after reconnecting, {len(b)} lines arrived (replay)")
+received_gap = [line for line in b if b"TEST" in line]
+assert all(line.rstrip() in b for line in gap), "replay did not return all injected messages"
+print(f"Phase 3: replay returned {len(received_gap)}/3 injected messages in {replay_time:.1f}s")
 
 # Phase 4: multicast (2 clients in parallel)
 print("\n--- Multicast test (2 live clients) ---")
 cA = socket.create_connection((HOST, PORT), timeout=8)
-read_lines(cA, 3)  # drenar replay de A
+read_lines(cA, 1)  # drain replay for A
 cB = socket.create_connection((HOST, PORT), timeout=8)
-read_lines(cB, 2)  # drenar replay de B
-both = read_lines(cB, 4)
+read_lines(cB, 1)  # drain replay for B
+live = b"!AIVDM,1,1,,A,LIVE01,0*00\r\n"
+send_udp([live], UDP_PORT)
+both = read_lines(cB, 1)
 cA.close()
 cB.close()
-print(f"Client B received {len(both)} lines with A connected in parallel => broadcast OK")
+assert live.rstrip() in both, "live broadcast did not reach client B"
+print("Client B received a live message with A connected in parallel => broadcast OK")
 

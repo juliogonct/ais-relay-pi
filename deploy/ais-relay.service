@@ -8,11 +8,28 @@ Wants=ais-catcher.service
 DynamicUser=yes
 PrivateTmp=yes
 NoNewPrivileges=yes
+UMask=0077
 ExecStart=/usr/bin/python3 /usr/local/bin/ais-relay.py
 # Configuration lives in a SINGLE file: /etc/ais-relay/ais-relay.conf
 # (copy deploy/ais-relay.conf.example and edit that file).
 # The "-" prefix makes it optional: if missing, the script defaults are used.
 EnvironmentFile=-/etc/ais-relay/ais-relay.conf
+TasksMax=128
+MemoryMax=512M
+CPUQuota=80%
+ProtectHome=yes
+PrivateDevices=yes
+ProtectSystem=full
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictRealtime=yes
+LockPersonality=yes
+StateDirectory=ais-relay
+LogRateLimitIntervalSec=30s
+LogRateLimitBurst=100
 Restart=always
 RestartSec=5
 
