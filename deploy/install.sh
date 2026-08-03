@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # =====================================================================
-# ais-relay — instalador
+# ais-relay — installer
 #
 #   sudo ./deploy/install.sh
 #
-# Instala (o actualiza) el servicio y crea el fichero de configuración
-# único (/etc/ais-relay/ais-relay.conf) si no existe. Luego edítalo y
-# reinicia:  sudo systemctl restart ais-relay
+# Installs (or updates) the service and creates the single configuration
+# file (/etc/ais-relay/ais-relay.conf) if it does not exist. Then edit it
+# and restart:  sudo systemctl restart ais-relay
 # =====================================================================
 set -euo pipefail
 
@@ -16,28 +16,28 @@ UNIT=/etc/systemd/system/ais-relay.service
 CONF_DIR=/etc/ais-relay
 CONF="$CONF_DIR/ais-relay.conf"
 
-# 1) Programa
+# 1) Program
 install -o root -g root -m 0755 "$SRC/../ais-relay.py" "$BIN"
-echo "✔ Programa: $BIN"
+echo "OK Program: $BIN"
 
-# 2) Unidad systemd
+# 2) systemd unit
 install -o root -g root -m 0644 "$SRC/ais-relay.service" "$UNIT"
-echo "✔ Servicio: $UNIT"
+echo "OK Service: $UNIT"
 
-# 3) Config (LUGAR ÚNICO) — solo si no existe, para no pisar tus ajustes
+# 3) Config (SINGLE PLACE) — only if it does not exist, to keep your settings
 mkdir -p "$CONF_DIR"
 if [ ! -f "$CONF" ]; then
   install -o root -g root -m 0600 "$SRC/ais-relay.conf.example" "$CONF"
-  echo "✔ Config creada: $CONF  (edítala y reinicia el servicio)"
+  echo "OK Config created: $CONF  (edit it and restart the service)"
 else
-  echo "· Config existente (no se sobrescribe): $CONF"
+  echo "= Existing config kept (not overwritten): $CONF"
 fi
 
-# 4) Arrancar/habilitar
+# 4) Enable/start
 systemctl daemon-reload
 systemctl enable --now ais-relay.service >/dev/null 2>&1 || systemctl restart ais-relay.service
-echo "✔ ais-relay activado."
+echo "OK ais-relay enabled."
 echo ""
-echo "Próximo paso: edita $CONF y, si lo cambias, haz:"
+echo "Next step: edit $CONF and, if changed, run:"
 echo "  sudo systemctl restart ais-relay"
-echo "Estado: sudo systemctl status ais-relay — Prueba: nc <host> 10110"
+echo "Status: sudo systemctl status ais-relay — Test: nc <host> 10110"

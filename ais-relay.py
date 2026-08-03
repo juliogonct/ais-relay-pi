@@ -1,30 +1,30 @@
 #!/usr/bin/env python3
 """ais-relay: NMEA UDP -> ring buffer -> TCP (network clients).
 
-Recibe un stream NMEA (p. ej. el que genera AIS-catcher) por UDP, mantiene un
-buffer circular en memoria (y opcionalmente a disco) y lo re-sirve por TCP a
-cualquier cliente de red que se conecte. Pensado para estaciones receptoras AIS
-cuyo enlace de red es intermitente (WiFi, 4G/5G): los datos capturados en
-local no se pierden durante un corte.
+Receives an NMEA stream (e.g. from AIS-catcher) over UDP, keeps a circular
+buffer in memory (and optionally on disk), and re-serves it over TCP to any
+connecting network client. Designed for AIS receivers whose network link is
+intermittent (WiFi, 4G/5G): data captured locally is not lost during an
+outage.
 
-Comportamiento:
-  * Pipe-through en tiempo real: cada datagrama NMEA se re-expide al instante a
-    los clientes conectados (sin rate limit).
-  * Replay a la reconexión: al aceptarse una conexión nueva se re-expide una
-    ventana mínima y cautelosa del buffer (REPLAY_ON_CONNECT_SEC, por defecto
-    30 s, ~ margen sobre la caída) y después se sigue en vivo. Así, lo capturado
-    durante un corte de red (p. ej. WiFi/5G) se recupera al volver la conexión.
-  * El reenvío es SOLO el gap + margen pequeño; NO pretende ser exacto. Los
-    duplicados resultantes se filtran en el CLIENTE (idempotencia: p. ej. por
-    MMSI en un consumidor que mantiene estado por buque). Para reenvío exacto
-    desde el último marcador de un cliente, este puede enviar "REPLAY <seq>" y
-    se re-expiden solo los mensajes con número de secuencia mayor (sin dup).
+Behavior:
+  * Real-time pipe-through: every NMEA datagram is forwarded instantly to all
+    connected clients (no rate limiting).
+  * Replay on reconnect: on every new connection a small, cautious window of
+    the buffer is re-sent (REPLAY_ON_CONNECT_SEC, default 30 s, ~ margin over
+    the outage) and then the live stream continues. Data captured during a
+    network outage (e.g. WiFi/5G) is recovered once connectivity returns.
+  * The replay is ONLY the gap + a small margin; it is NOT exact. Duplicates
+    are filtered on the CLIENT (idempotent: e.g. by MMSI in a consumer that
+    keeps per-vessel state). For exact replay from a client's last marker, the
+    client can send "REPLAY <seq>" and only messages with a higher sequence
+    number are re-sent (no duplicates).
 
-Acceso:
-  * Por defecto se confía en el control de acceso de la red (ACL del overlay /
-    firewall). El servidor escucha en TCP_HOST/TCP_PORT.
-  * Opcional: si AIS_RELAY_TOKEN está definido, el cliente debe enviar como
-    primera línea "AUTH <token>\n" antes de recibir datos.
+Access:
+  * By default it relies on the network's access control (overlay ACL /
+    firewall). The server listens on TCP_HOST/TCP_PORT.
+  * Optional: if AIS_RELAY_TOKEN is set, the client must send
+    "AUTH <token>\\n" as its first line before receiving data.
 """
 import os
 import socket
@@ -48,43 +48,44 @@ def _env(name, default, cast=str):
     return default if v is None else cast(v)
 
 
-# Configuración (sobreescribible por variables de entorno en la unidad systemd)
+# Configuration (overridable via environment variables / systemd EnvironmentFile)
 UDP_HOST = _env("AIS_RELAY_UDP_HOST", "127.0.0.1")
 UDP_PORT = int(_env("AIS_RELAY_UDP_PORT", "10110"))
-# Seguridad: la entrada UDP debe ser loopback (solo el decodificador local).
-# Para permitir un decodificador remoto, fija explícitamente 1 (inseguro por defecto).
+# Security: the UDP input must be loopback (only the local decoder). To allow a
+# remote decoder, explicitly set 1 (insecure by default).
 UDP_ALLOW_EXTERNAL = _env("AIS_RELAY_UDP_ALLOW_EXTERNAL", "0") == "1"
 TCP_HOST = _env("AIS_RELAY_TCP_HOST", "0.0.0.0")
 TCP_PORT = int(_env("AIS_RELAY_TCP_PORT", "10110"))
-RETENTION_SEC = float(_env("AIS_RELAY_RETENTION_SEC", "3600"))   # anillo en memoria
+RETENTION_SEC = float(_env("AIS_RELAY_RETENTION_SEC", "3600"))   # in-memory ring
 MAX_ENTRIES = int(_env("AIS_RELAY_MAX_ENTRIES", "200000"))
 REPLAY_ON_CONNECT_SEC = float(_env("AIS_RELAY_REPLAY_ON_CONNECT_SEC", "30"))
 TOKEN = _env("AIS_RELAY_TOKEN", "")
 AUTH_TIMEOUT = float(_env("AIS_RELAY_AUTH_TIMEOUT", "5"))
-LOG_FILE = _env("AIS_RELAY_LOG_FILE", "")   # "" = sin persistencia a disco
-# Límites (protección frente a clientes lentos/atascados y abuso de conexiones):
+LOG_FILE = _env("AIS_RELAY_LOG_FILE", "")   # "" = no disk persistence
+# Limits (protect against slow/stuck clients and connection abuse):
 MAX_CLIENTS = int(_env("AIS_RELAY_MAX_CLIENTS", "64"))
-# Timeout de escritura por socket: si un cliente no drena su buffer en este
-# tiempo, se le desconecta (evita que un cliente congelado bloquee a los demás).
+# Per-socket write timeout: if a client does not drain its buffer within this
+# time it is disconnected (a frozen client must not stall the others).
 SEND_TIMEOUT = float(_env("AIS_RELAY_SEND_TIMEOUT_SEC", "5"))
-# Acotes de replay y log a disco (evitan abuso de CPU/memoria y disco ilimitado):
+# Replay and disk-log ceilings (prevent CPU/memory abuse and unbounded disk):
 MAX_REPLAY_ENTRIES = int(_env("AIS_RELAY_MAX_REPLAY_ENTRIES", "20000"))
-# Tamaño máximo (MB) del JSONL a disco; al superarlo se rota. 0 = sin volcado.
+# Max size (MB) of the disk JSONL before rotation. To disable disk logging,
+# leave AIS_RELAY_LOG_FILE empty.
 LOG_MAX_MB = float(_env("AIS_RELAY_LOG_MAX_MB", "64"))
 LOG_BACKUPS = int(_env("AIS_RELAY_LOG_BACKUPS", "2"))
 
-# ---- Estado global ----
+# ---- Global state ----
 _SEQ = 0
 _SEQ_LOCK = threading.Lock()
-# Anillo: deque de tuplas (seq, timestamp, bytes_linea)
+# Ring: deque of (seq, timestamp, line_bytes)
 BUFFER = deque()
 BUFFER_LOCK = threading.Lock()
-CLIENTS = set()          # sockets TCP conectados
+CLIENTS = set()          # connected TCP sockets
 CLIENTS_LOCK = threading.Lock()
-ACTIVE = 0               # conexiones activas (para el límite de clientes)
+ACTIVE = 0               # active connections (for the client limit)
 ACTIVE_LOCK = threading.Lock()
-LOG_FH = None            # manejador opcional de fichero JSONL
-_log_bytes = 0           # bytes acumulados del log a disco (para rotación)
+LOG_FH = None            # optional JSONL file handle
+_log_bytes = 0           # bytes written to the disk log (for rotation)
 
 
 def next_seq():
@@ -106,11 +107,11 @@ def _open_log():
             _rotate_log()
         else:
             LOG_FH = open(LOG_FILE, "a", buffering=1)
-            log.info("Log a disco activo: %s", LOG_FILE)
+            log.info("Disk log active: %s", LOG_FILE)
 
 
 def _rotate_log():
-    """Rota el JSONL a disco (tamaño max) manteniendo LOG_BACKUPS copias."""
+    """Rotate the disk JSONL at max size, keeping LOG_BACKUPS copies."""
     global LOG_FH, _log_bytes
     try:
         if LOG_FH is not None:
@@ -139,11 +140,11 @@ def _rotate_log():
                 pass
     LOG_FH = open(base, "a", buffering=1)
     _log_bytes = 0
-    log.info("Log a disco rotado (max %.0f MB, %d backups)", LOG_MAX_MB, LOG_BACKUPS)
+    log.info("Disk log rotated (max %.0f MB, %d backups)", LOG_MAX_MB, LOG_BACKUPS)
 
 
 def _append_disk(seq, ts, line):
-    """Persiste (opcional) cada mensaje como JSONL en disco, con rotación por tamaño."""
+    """Optionally persist each message to disk as JSONL, with size-based rotation."""
     global _log_bytes
     if LOG_FH is None:
         return
@@ -156,8 +157,8 @@ def _append_disk(seq, ts, line):
         _log_bytes += len(rec.encode("utf-8"))
         if _log_bytes >= LOG_MAX_MB * 1024 * 1024:
             _rotate_log()
-    except Exception as exc:  # no debe romper el flujo
-        log.warning("fallo al escribir log a disco: %s", exc)
+    except Exception as exc:  # must not break the stream
+        log.warning("failed to write disk log: %s", exc)
 
 
 def add_to_buffer(line):
@@ -173,16 +174,16 @@ def add_to_buffer(line):
 
 
 def snapshot_since(earliest_ts=None, seq_from=None, limit=None):
-    """Devuelve las N líneas más recientes (bytes) filtradas por tiempo/seq.
+    """Return the N most recent lines (bytes) filtered by time/sequence.
 
-    Itera el anillo en orden inverso con salida temprana, sin copiar el buffer
-    completo, para no disparar CPU/memoria en replays repetidos.
+    Iterate the ring in reverse with early exit, without copying the whole
+    buffer, to avoid CPU/memory spikes on repeated replays.
     """
     out_rev = []
     with BUFFER_LOCK:
         for seq, ts, line in reversed(BUFFER):
             if earliest_ts is not None and ts < earliest_ts:
-                break  # más atrás = más viejo; ya no aplica
+                break  # older behind; no longer applies
             if seq_from is not None and seq < seq_from:
                 break
             out_rev.append(line)
@@ -192,12 +193,12 @@ def snapshot_since(earliest_ts=None, seq_from=None, limit=None):
     return out_rev
 
 
-# ---- UDP: entra el NMEA de AIS-catcher ----
+# ---- UDP: ingest NMEA from the AIS decoder ----
 def udp_receiver():
     udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     udp.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     udp.bind((UDP_HOST, UDP_PORT))
-    log.info("UDP escuchando en %s:%s", UDP_HOST, UDP_PORT)
+    log.info("UDP listening on %s:%s", UDP_HOST, UDP_PORT)
     udp.settimeout(1.0)
     while True:
         try:
@@ -222,16 +223,16 @@ def udp_receiver():
                     c.close()
                 except Exception:
                     pass
-                log.info("Cliente lento/atascado desconectado, restan %d", len(CLIENTS))
+                log.info("Slow/stuck client dropped, %d remaining", len(CLIENTS))
 
 
-# ---- TCP: sirve a clientes (tailnet) ----
+# ---- TCP: serve clients (network) ----
 def handle_client(conn, addr):
     global ACTIVE
     with ACTIVE_LOCK:
         if ACTIVE >= MAX_CLIENTS:
             log.warning(
-                "Rechazado cliente %s: límite de conexiones alcanzado (%d)",
+                "Rejected client %s: connection limit reached (%d)",
                 addr, MAX_CLIENTS,
             )
             try:
@@ -240,7 +241,7 @@ def handle_client(conn, addr):
                 pass
             return
         ACTIVE += 1
-    # Timeout de escritura acotado en TODAS las operaciones de este cliente.
+    # Bounded write timeout for ALL operations of this client.
     conn.settimeout(SEND_TIMEOUT)
     try:
         if TOKEN:
@@ -250,14 +251,14 @@ def handle_client(conn, addr):
             payload = first.strip()
             expected = b"AUTH " + TOKEN.encode()
             if not (payload.startswith(b"AUTH ") and hmac.compare_digest(payload, expected)):
-                log.info("Rechazado cliente %s (token invalido/ausente)", addr)
+                log.info("Rejected client %s (invalid/missing token)", addr)
                 conn.close()
                 return
-            log.info("Cliente %s autenticado", addr)
+            log.info("Client %s authenticated", addr)
         else:
-            log.info("Cliente conectado: %s", addr)
+            log.info("Client connected: %s", addr)
 
-        # Replay de la ventana reciente (recupera huecos por cortes de red)
+        # Replay the recent window (recovers gaps from network outages)
         earliest = time.time() - REPLAY_ON_CONNECT_SEC
         replayed = snapshot_since(earliest_ts=earliest, limit=MAX_REPLAY_ENTRIES)
         if replayed:
@@ -266,14 +267,14 @@ def handle_client(conn, addr):
             except Exception:
                 conn.close()
                 return
-            log.info("Replay enviado a %s: %d mensajes", addr, len(replayed))
+            log.info("Replay sent to %s: %d messages", addr, len(replayed))
 
-        # Alta en el broadcast en vivo
+        # Join the live broadcast
         with CLIENTS_LOCK:
             CLIENTS.add(conn)
-            log.info("Transmitiendo en vivo a %s (%d clientes)", addr, len(CLIENTS))
+            log.info("Live streaming to %s (%d clients)", addr, len(CLIENTS))
 
-        # Control opcional: "REPLAY <seq>" re-expide desde esa secuencia
+        # Optional control: "REPLAY <seq>" re-sends from that sequence
         while True:
             try:
                 chunk = conn.recv(4096)
@@ -293,10 +294,10 @@ def handle_client(conn, addr):
                             raise
                 except Exception:
                     pass
-            # clientes pasivos (nc, OpenCPN) no envían nada: se ignoran
+            # passive clients (nc, OpenCPN) send nothing: ignore
             time.sleep(0.05)
     except Exception as exc:
-        log.info("Fin de conexion %s: %s", addr, exc)
+        log.info("End of connection %s: %s", addr, exc)
     finally:
         with CLIENTS_LOCK:
             CLIENTS.discard(conn)
@@ -306,7 +307,7 @@ def handle_client(conn, addr):
             conn.close()
         except Exception:
             pass
-        log.info("Cliente %s desconectado", addr)
+        log.info("Client %s disconnected", addr)
 
 
 def tcp_server():
@@ -314,15 +315,15 @@ def tcp_server():
     srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     srv.bind((TCP_HOST, TCP_PORT))
     srv.listen(16)
-    log.info("TCP escuchando en %s:%s", TCP_HOST, TCP_PORT)
+    log.info("TCP listening on %s:%s", TCP_HOST, TCP_PORT)
     while True:
         conn, addr = srv.accept()
         threading.Thread(target=handle_client, args=(conn, addr), daemon=True).start()
 
 
-# ---- Arranque ----
+# ---- Startup ----
 def load_disk_log():
-    """Si hay LOG_FILE, carga en el anillo las entradas dentro de RETENTION_SEC."""
+    """If LOG_FILE is set, load the ring from entries within RETENTION_SEC."""
     if not LOG_FILE or not os.path.exists(LOG_FILE):
         return
     global _SEQ
@@ -334,7 +335,7 @@ def load_disk_log():
         with open(LOG_FILE, "r", encoding="ascii", errors="ignore") as f:
             f.seek(tail)
             if tail:
-                f.readline()  # descartar línea parcial
+                f.readline()  # discard partial line
             cutoff = time.time() - RETENTION_SEC
             for ln in f:
                 try:
@@ -347,17 +348,17 @@ def load_disk_log():
                 max_seq = max(max_seq, e["seq"])
                 loaded += 1
     except Exception as exc:
-        log.warning("No se pudo cargar log a disco: %s", exc)
+        log.warning("Failed to load disk log: %s", exc)
     _SEQ = max(max_seq, _SEQ)
     with BUFFER_LOCK:
         while len(BUFFER) > MAX_ENTRIES:
             BUFFER.popleft()
     if loaded:
-        log.info("Buffer repoblado desde disco: %d mensajes", loaded)
+        log.info("Buffer repopulated from disk: %d messages", loaded)
 
 
 def _udp_is_loopback():
-    """True si la entrada UDP está en loopback (único remitente local)."""
+    """True if the UDP input is on loopback (only local sender)."""
     if UDP_HOST in ("127.0.0.1", "::1", "localhost"):
         return True
     try:
@@ -375,15 +376,15 @@ def main():
     if not _udp_is_loopback():
         if not UDP_ALLOW_EXTERNAL:
             log.error(
-                "Entrada UDP en %s no es loopback y AIS_RELAY_UDP_ALLOW_EXTERNAL "
-                "no está activado. Aborto por seguridad: usa 127.0.0.1 o fija "
-                "AIS_RELAY_UDP_ALLOW_EXTERNAL=1 si es un decodificador remoto.",
+                "UDP input on %s is not loopback and AIS_RELAY_UDP_ALLOW_EXTERNAL is "
+                "not enabled. Aborting for security: use 127.0.0.1 or set "
+                "AIS_RELAY_UDP_ALLOW_EXTERNAL=1 if you have a remote decoder.",
                 UDP_HOST,
             )
             sys.exit(1)
         log.warning(
-            "Entrada UDP externa habilitada en %s:%s — cualquiera con acceso a "
-            "la red podría inyectar NMEA. Asegúrate del firewall.",
+            "External UDP input enabled on %s:%s — anyone with network access could "
+            "inject NMEA. Ensure your firewall is configured.",
             UDP_HOST, UDP_PORT,
         )
     _open_log()

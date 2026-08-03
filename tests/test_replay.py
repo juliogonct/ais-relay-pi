@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Prueba del replay: desconecta unos segundos y verifica que el buffer re-expide.
+"""Replay test: disconnects for a few seconds and verifies the buffer replays.
 
-Uso:
+Usage:
     python test_replay.py [host] [port]
 
 Defaults: host=127.0.0.1, port=10110
@@ -40,26 +40,26 @@ def read_lines(conn, seconds):
     return lines
 
 
-# Fase 1: conexión inicial, leemos 4s
+# Phase 1: initial connection, read 4s
 c1 = socket.create_connection((HOST, PORT), timeout=8)
 a = read_lines(c1, 4)
 c1.close()
-print(f"Fase 1: {len(a)} lineas recibidas (lectura inicial)")
+print(f"Phase 1: {len(a)} lines received (initial read)")
 
-# Fase 2: hueco SIN conexión (los datos siguen entrando al buffer)
+# Phase 2: outage WITHOUT connection (data keeps entering the buffer)
 time.sleep(3)
-print("Fase 2: hueco de 3s sin conexion (datos solo al buffer)")
+print("Phase 2: 3s gap without connection (data only to the buffer)")
 
-# Fase 3: reconexión; el replay debería devolvernos la ventana reciente
+# Phase 3: reconnect; the replay should return the recent window
 c2 = socket.create_connection((HOST, PORT), timeout=8)
 t_replay = time.time()
 b = read_lines(c2, 2)
 c2.close()
 replay_time = time.time() - t_replay
-print(f"Fase 3: en los primeros {replay_time:.1f}s tras reconectar llegaron {len(b)} lineas (replay)")
+print(f"Phase 3: within the first {replay_time:.1f}s after reconnecting, {len(b)} lines arrived (replay)")
 
-# Fase 4: multicast (2 clientes en paralelo)
-print("\n--- Prueba multicast (2 clientes en vivo) ---")
+# Phase 4: multicast (2 clients in parallel)
+print("\n--- Multicast test (2 live clients) ---")
 cA = socket.create_connection((HOST, PORT), timeout=8)
 read_lines(cA, 3)  # drenar replay de A
 cB = socket.create_connection((HOST, PORT), timeout=8)
@@ -67,5 +67,5 @@ read_lines(cB, 2)  # drenar replay de B
 both = read_lines(cB, 4)
 cA.close()
 cB.close()
-print(f"Cliente B recibio {len(both)} lineas con A conectado en paralelo => broadcast OK")
+print(f"Client B received {len(both)} lines with A connected in parallel => broadcast OK")
 

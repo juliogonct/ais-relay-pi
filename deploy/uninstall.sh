@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # =====================================================================
-# ais-relay — desinstalador
+# ais-relay — uninstaller
 #
 #   sudo ./deploy/uninstall.sh
 #
-# Detiene y elimina el servicio y el programa. CONSERVA tu configuración
-# en /etc/ais-relay/ais-relay.conf por si quisieras reinstalarlo.
+# Stops and removes the service and the program. KEEPS your configuration
+# at /etc/ais-relay/ais-relay.conf in case you want to reinstall.
 # =====================================================================
 set -euo pipefail
 
@@ -17,6 +17,6 @@ rm -f "$UNIT"
 rm -f "$BIN"
 systemctl daemon-reload
 
-echo "✔ ais-relay desinstalado."
-echo "  Config conservada en /etc/ais-relay/ais-relay.conf"
-echo "  Para borrarla también: sudo rm -rf /etc/ais-relay"
+echo "OK ais-relay uninstalled."
+echo "  Config kept at /etc/ais-relay/ais-relay.conf"
+echo "  To remove it too: sudo rm -rf /etc/ais-relay"

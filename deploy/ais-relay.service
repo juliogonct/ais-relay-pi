@@ -4,15 +4,14 @@ After=ais-catcher.service
 Wants=ais-catcher.service
 
 [Service]
-# Sin privilegios: usuario efímero (DynamicUser) + restricciones. No corre como root.
+# Runs without privileges: ephemeral user (DynamicUser) + restrictions. Not root.
 DynamicUser=yes
 PrivateTmp=yes
 NoNewPrivileges=yes
 ExecStart=/usr/bin/python3 /usr/local/bin/ais-relay.py
-# Configuración en UN ÚNICO fichero: /etc/ais-relay/ais-relay.conf
-# (copia de deploy/ais-relay.conf.example y edita ese fichero).
-# El prefijo "-" hace que sea opcional: si no existe, se usan los valores
-# por defecto del propio script.
+# Configuration lives in a SINGLE file: /etc/ais-relay/ais-relay.conf
+# (copy deploy/ais-relay.conf.example and edit that file).
+# The "-" prefix makes it optional: if missing, the script defaults are used.
 EnvironmentFile=-/etc/ais-relay/ais-relay.conf
 Restart=always
 RestartSec=5

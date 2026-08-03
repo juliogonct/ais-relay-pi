@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Cliente de prueba del ais-relay: conecta por TCP y muestra el stream NMEA.
+"""ais-relay test client: connects over TCP and prints the NMEA stream.
 
-Uso:
-    python test_client.py [host] [port] [segundos]
+Usage:
+    python test_client.py [host] [port] [seconds]
 
-Defaults: host=127.0.0.1, port=10110, segundos=10
+Defaults: host=127.0.0.1, port=10110, seconds=10
 """
 import socket, sys, time
 
@@ -19,7 +19,7 @@ DURATION = float(_arg(3, "10.0"))
 
 s = socket.create_connection((HOST, PORT), timeout=10)
 s.settimeout(2.0)
-print(f"Conectado a {HOST}:{PORT}", flush=True)
+print(f"Connected to {HOST}:{PORT}", flush=True)
 
 buf = b""
 t0 = time.time()
@@ -29,13 +29,13 @@ while time.time() - t0 < DURATION:
     try:
         data = s.recv(4096)
     except socket.timeout:
-        print("  (sin datos en 2s)", flush=True)
+        print("  (no data in 2s)", flush=True)
         continue
     except Exception as e:
-        print(f"Conexion cerrada: {e}", flush=True)
+        print(f"Connection closed: {e}", flush=True)
         break
     if not data:
-        print("Fin de stream (cliente cerró)", flush=True)
+        print("End of stream (server closed)", flush=True)
         break
     buf += data
     while b"\n" in buf:
@@ -48,6 +48,6 @@ while time.time() - t0 < DURATION:
             aivdm += 1
         print(line.decode("ascii", "ignore"), flush=True)
 
-print(f"\nResumen: {count} lineas, {aivdm} AIVDM, en {time.time()-t0:.1f}s", flush=True)
+print(f"\nSummary: {count} lines, {aivdm} AIVDM, in {time.time()-t0:.1f}s", flush=True)
 s.close()
 

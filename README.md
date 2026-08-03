@@ -1,212 +1,215 @@
-# ais-relay
+# ais-relay-pi
 
-Relay de NMEA AIS con **buffer de replay** para estaciones receptoras AIS.
-Recibe un stream NMEA por UDP, lo re-sirve por TCP a múltiples clientes y
-recupera lo capturado durante un **corte de red** (WiFi, 4G/5G, overlay/VPN)
-gracias a un anillo en memoria con replay a la reconexión.
+A NMEA AIS relay with a **replay buffer**, designed for AIS receiving stations
+whose network link is intermittent (WiFi, 4G/5G, overlay/VPN). It receives an
+NMEA stream over UDP, re-serves it over TCP to multiple clients, and recovers
+data captured during a network outage thanks to an in-memory ring with replay
+on reconnect.
 
-Sirve como puente entre un decodificador AIS (p. ej. **AIS-catcher**) y
-cualquier consumidor (OpenCPN, `nc`, scripts, servicios que mantienen estado
-por MMSI como una base Redis, etc.) a través de una red privada o pública.
+It bridges an AIS decoder (e.g. **AIS-catcher**) and any consumer (OpenCPN,
+`nc`, scripts, services that keep per-vessel state such as a Redis store) over
+a private or public network.
 
 ```
-SDR AIS ──► decodificador (AIS-catcher) ──UDP :10110──► ais-relay
-                                                       ├─ pipe-through en vivo
-                                                       ├─ anillo en memoria (N)
-                                                       └─ TCP :10110 ──► clientes
+SDR AIS ──► decoder (AIS-catcher) ──UDP :10110──► ais-relay-pi
+                                                  ├─ real-time pipe-through
+                                                  ├─ in-memory ring (N)
+                                                  └─ TCP :10110 ──► clients
 ```
 
-## Características
+## Features
 
-- **En vivo, sin rate limit**: cada datagrama NMEA (`!AIVDM`/`!AIVDO`) se
-  re-expide al instante a todos los clientes conectados.
-- **Replay mínimo a la reconexión**: al conectar, se reenvía una ventana
-  pequeña y cautelosa (`REPLAY_ON_CONNECT_SEC`, 30 s por defecto ≈ margen sobre
-  la caída) y después se sigue en vivo. No se pierden los datos capturados
-  durante un corte.
-- **Reenvío exacto bajo demanda**: un cliente puede enviar `REPLAY <seq>` para
-  recibir solo los mensajes con número de secuencia mayor (sin duplicados).
-- **Deduplicación en el cliente**: el replay no es exacto por defecto; los
-  consumidores que mantienen estado (p. ej. por MMSI) filtran duplicados de
-  forma idempotente.
-- **Auth opcional**: token (`AUTH <token>` como primera línea) para control de
-  acceso cuando el filtro de red no es suficiente.
-- **Sin dependencias externas**: solo la biblioteca estándar de Python 3.
+- **Real-time, no rate limiting**: every NMEA datagram (`!AIVDM`/`!AIVDO`) is
+  forwarded instantly to all connected clients.
+- **Minimal replay on reconnect**: on connect, a small, cautious window of the
+  buffer is re-sent (`REPLAY_ON_CONNECT_SEC`, 30 s by default ≈ margin over the
+  outage) and then the live stream continues. Data captured during an outage is
+  not lost.
+- **Exact replay on demand**: a client can send `REPLAY <seq>` to receive only
+  messages with a higher sequence number (no duplicates).
+- **Client-side deduplication**: the replay is not exact by default; consumers
+  that keep state (e.g. by MMSI) filter duplicates idempotently.
+- **Optional auth**: token (`AUTH <token>` as the first line) when network-only
+  access control is not enough.
+- **Hardened**: bounded replay (CPU/memory), bounded connections and slow-client
+  handling, disk-log rotation, and runs without privileges.
+- **No external dependencies**: only the Python 3 standard library.
 
-## Instalación (rápida)
+## Quick install
 
-Instala (o actualiza) todo en un solo paso — copia el programa, la unidad y
-crea el fichero de configuración único:
+Install (or update) everything in one step — copies the program, the unit and
+creates the single configuration file:
 
 ```bash
 sudo ./deploy/install.sh
-sudo nano /etc/ais-relay/ais-relay.conf     # edita tus valores (lugar único)
+sudo nano /etc/ais-relay/ais-relay.conf     # edit your values (single place)
 sudo systemctl restart ais-relay
 ```
 
-Desinstalar (conserva tu configuración):
+Uninstall (keeps your configuration):
 
 ```bash
 sudo ./deploy/uninstall.sh
 ```
 
-Alternativa manual (si prefieres hacerlo a mano), en un host Linux
-(Debian/Raspberry Pi OS):
+Manual alternative (Debian / Raspberry Pi OS):
 
 ```bash
 sudo cp ais-relay.py /usr/local/bin/ais-relay.py
 sudo chmod +x /usr/local/bin/ais-relay.py
 sudo cp deploy/ais-relay.service /etc/systemd/system/ais-relay.service
 
-# Configuración (UN ÚNICO fichero):
+# Configuration (SINGLE file):
 sudo mkdir -p /etc/ais-relay
 sudo cp deploy/ais-relay.conf.example /etc/ais-relay/ais-relay.conf
-sudo nano /etc/ais-relay/ais-relay.conf     # edita tus valores
+sudo nano /etc/ais-relay/ais-relay.conf     # edit your values
 
 sudo systemctl daemon-reload
 sudo systemctl enable --now ais-relay.service
 ```
 
-También puede ejecutarse directamente (aquí la configuración se pasa como
-variables de entorno del shell, o creando `/etc/ais-relay/ais-relay.conf`):
+It can also run directly (with configuration passed as shell environment
+variables, or by creating `/etc/ais-relay/ais-relay.conf`):
 
 ```bash
 python3 ais-relay.py
 ```
 
+## Configuration
 
-## Configuración
+All configuration for your installation lives in **a single file**:
+`/etc/ais-relay/ais-relay.conf` (a copy of `deploy/ais-relay.conf.example`).
+The systemd unit loads it with an `EnvironmentFile`. If it is missing, the
+script defaults are used.
 
-Toda la configuración de tu instalación vive en **un único fichero**:
-`/etc/ais-relay/ais-relay.conf` (copia de `deploy/ais-relay.conf.example`).
-La unidad systemd lo carga con `EnvironmentFile`. Si no existe, se usan los
-valores por defecto del script.
-
-| Variable | Default | Descripción |
+| Variable | Default | Description |
 |---|---|---|
-| `AIS_RELAY_UDP_HOST` | `127.0.0.1` | Host de entrada NMEA por UDP |
-| `AIS_RELAY_UDP_PORT` | `10110` | Puerto de entrada UDP |
-| `AIS_RELAY_UDP_ALLOW_EXTERNAL` | `0` | `1` permite input UDP remoto (inseguro); por defecto solo loopback |
-| `AIS_RELAY_TCP_HOST` | `0.0.0.0` | Host en el que sirve TCP |
-| `AIS_RELAY_TCP_PORT` | `10110` | Puerto de salida TCP |
-| `AIS_RELAY_RETENTION_SEC` | `3600` | Ventana del anillo en memoria (s) |
-| `AIS_RELAY_MAX_ENTRIES` | `200000` | Máx. mensajes retenidos en memoria |
-| `AIS_RELAY_REPLAY_ON_CONNECT_SEC` | `30` | Replay mínimo a cada reconexión (s) |
-| `AIS_RELAY_TOKEN` | *(vacío)* | Si se define, el cliente debe enviar `AUTH <token>` |
-| `AIS_RELAY_LOG_FILE` | *(vacío)* | Persistir el stream a disco (JSONL) y repoblar el buffer al arrancar |
-| `AIS_RELAY_MAX_REPLAY_ENTRIES` | `20000` | Tope de mensajes por replay (evita volcar todo el anillo) |
-| `AIS_RELAY_LOG_MAX_MB` | `64` | Tamaño máx. del JSONL a disco; al superarlo se rota. Desactivar el log = no definir `LOG_FILE` |
-| `AIS_RELAY_LOG_BACKUPS` | `2` | Nº de copias rotadas del log a disco |
-| `AIS_RELAY_MAX_CLIENTS` | `64` | Máx. conexiones TCP simultáneas (más allá se rechazan) |
-| `AIS_RELAY_SEND_TIMEOUT_SEC` | `5` | Timeout de escritura por cliente; si no drena su buffer se le desconecta |
+| `AIS_RELAY_UDP_HOST` | `127.0.0.1` | UDP input host (your NMEA decoder) |
+| `AIS_RELAY_UDP_PORT` | `10110` | UDP input port |
+| `AIS_RELAY_UDP_ALLOW_EXTERNAL` | `0` | `1` allows a remote UDP input (insecure); default loopback only |
+| `AIS_RELAY_TCP_HOST` | `0.0.0.0` | TCP listen host |
+| `AIS_RELAY_TCP_PORT` | `10110` | TCP output port |
+| `AIS_RELAY_RETENTION_SEC` | `3600` | In-memory ring window (s) |
+| `AIS_RELAY_MAX_ENTRIES` | `200000` | Max messages kept in memory |
+| `AIS_RELAY_REPLAY_ON_CONNECT_SEC` | `30` | Minimal replay on each reconnect (s) |
+| `AIS_RELAY_TOKEN` | *(empty)* | If set, clients must send `AUTH <token>` |
+| `AIS_RELAY_LOG_FILE` | *(empty)* | Persist the stream to disk (JSONL) and repopulate the buffer on startup |
+| `AIS_RELAY_MAX_REPLAY_ENTRIES` | `20000` | Max messages per replay (prevents dumping the whole ring) |
+| `AIS_RELAY_LOG_MAX_MB` | `64` | Max size (MB) of the disk JSONL before rotation. Disable by leaving `LOG_FILE` empty |
+| `AIS_RELAY_LOG_BACKUPS` | `2` | Rotated disk-log copies |
+| `AIS_RELAY_MAX_CLIENTS` | `64` | Max simultaneous TCP connections (beyond is rejected) |
+| `AIS_RELAY_SEND_TIMEOUT_SEC` | `5` | Per-client write timeout; clients that do not drain are disconnected |
 
+> If `AIS_RELAY_LOG_FILE` is set, the ring is repopulated from the file at
+> startup, so the replay survives service restarts.
 
-> Si se define `AIS_RELAY_LOG_FILE`, el anillo se repuebla desde el fichero al
-> arrancar, de modo que el replay sobrevive a reinicios del servicio.
+## Consumption
 
-## Consumo
-
-- **Cliente pasivo** (OpenCPN, `nc`): conectar y leer. Recibe replay mínimo + vivo.
+- **Passive client** (OpenCPN, `nc`): connect and read. You receive the minimal
+  replay + the live stream.
 
   ```bash
   nc <host> <port>
   ```
 
-- **Cliente con estado** (p. ej. Redis por MMSI): conectar y, para reenvío
-  exacto del hueco, enviar el último número de secuencia procesado:
+- **Stateful client** (e.g. Redis by MMSI): connect and, for exact gap replay,
+  send the last processed sequence number:
 
   ```
-  REPLAY <última_seq_procesada>
+  REPLAY <last_processed_seq>
   ```
 
-  y mantener el stream. (Si el servidor reenvía `@SEQ <n>` como línea de
-  control opcional, el cliente aprende los `seq` para futuras reconexiones.)
+  and keep the stream open. (If the server emits `@SEQ <n>` as an optional
+  control line, the client learns the `seq`s for future reconnects.)
 
-- Si `AIS_RELAY_TOKEN` está activo, la primera línea debe ser `AUTH <token>`.
+- If `AIS_RELAY_TOKEN` is active, the first line must be `AUTH <token>`.
 
 ## Tests
 
-Conectan contra un `ais-relay` en ejecución (host y puerto configurables por
-argumentos de línea de comandos):
+Connect to a running `ais-relay` (host and port configurable via CLI args):
 
 ```bash
-python tests/test_client.py <host> <port> [segundos]   # lee stream en vivo
-python tests/test_replay.py   <host> [port]            # verifica el replay tras un corte
+python tests/test_client.py <host> <port> [seconds]   # read live stream
+python tests/test_replay.py   <host> [port]            # verify replay after a cut
 ```
 
-## Red y control de acceso
 
-Diseñado para funcionar en **red privada** (LAN y/o overlay/VPN). El alcance se
-controla con `AIS_RELAY_TCP_HOST`:
+## Network and access control
 
-- **LAN + VPN (por defecto `0.0.0.0`):** escucha en todas las interfaces, así
-  que se alcanza por la red local y por el overlay/VPN a la vez.
-- **Solo VPN (recomendado si no hace falta la LAN):** fija `AIS_RELAY_TCP_HOST`
-  a la IP del overlay/VPN (p. ej. `10.0.0.5`). La estación queda accesible
-  únicamente por esa red.
+Designed to run on a **private network** (LAN and/or overlay/VPN). The scope is
+controlled with `AIS_RELAY_TCP_HOST`:
 
-Opciones de acceso:
-- **Por red:** el filtro lo pone la infraestructura (ACL del overlay/VPN o
-  firewall). Es el modo por defecto.
-- **Por token:** define `AIS_RELAY_TOKEN` y los clientes deberán enviar
-  `AUTH <token>` como primera línea.
+- **LAN + VPN (default `0.0.0.0`):** listens on all interfaces, reachable from
+  the local network and the overlay/VPN at the same time.
+- **VPN only (recommended if LAN is not needed):** set `AIS_RELAY_TCP_HOST` to
+  the overlay/VPN IP (e.g. `10.0.0.5`). The station is then reachable only over
+  that network.
 
-## Limitaciones y clientes lentos
+Access options:
+- **By network:** the filter is set by the infrastructure (overlay ACL or
+  firewall). This is the default.
+- **By token:** set `AIS_RELAY_TOKEN` and clients must send `AUTH <token>` as
+  the first line.
 
-`ais-relay` es un relay en vivo por defecto: si un cliente deja de leer, su
-buffer de socket se llena y, sin protección, **podría bloquear el reenvío a
-todos los demás**. Para evitarlo hay límites configurables:
+## Limits and slow clients
 
-- `AIS_RELAY_SEND_TIMEOUT_SEC` (5 s por defecto): un cliente que no drena su
-  buffer en ese tiempo se **desconecta automáticamente**, de modo que un
-  cliente atascado no congela al resto.
-- `AIS_RELAY_MAX_CLIENTS` (64): máximo de conexiones simultáneas; las que
-  superen el límite se rechazan.
+`ais-relay` is a live relay by default: if a client stops reading, its socket
+buffer fills and, without protection, it **could stall the forwarding to
+everyone else**. Configurable limits prevent this:
 
-Además se acota el **uso de CPU/memoria y el disco**:
+- `AIS_RELAY_SEND_TIMEOUT_SEC` (5 s default): a client that does not drain its
+  buffer is **disconnected automatically**, so a stuck client does not freeze
+  the rest.
+- `AIS_RELAY_MAX_CLIENTS` (64): maximum simultaneous connections; beyond that
+  they are rejected.
 
-- `AIS_RELAY_MAX_REPLAY_ENTRIES` (20000): cualquier replay (reconexión o
-  `REPLAY <seq>`) se limita a los N mensajes más recientes, de modo que un
-  cliente no puede forzar un volcado completo del anillo una y otra vez.
-- El anillo en memoria ya está acotado por `AIS_RELAY_MAX_ENTRIES` +
+CPU/memory and disk are also bounded:
+
+- `AIS_RELAY_MAX_REPLAY_ENTRIES` (20000): any replay (reconnect or
+  `REPLAY <seq>`) is capped to the N most recent messages, so a client cannot
+  force a full ring dump over and over.
+- The in-memory ring is bounded by `AIS_RELAY_MAX_ENTRIES` +
   `AIS_RELAY_RETENTION_SEC`.
-- El JSONL a disco rota al alcanzar `AIS_RELAY_LOG_MAX_MB`, manteniendo
-  `AIS_RELAY_LOG_BACKUPS` copias (`base`, `.1`, …): el disco nunca crece sin
-  límite.
+- The disk JSONL rotates at `AIS_RELAY_LOG_MAX_MB`, keeping
+  `AIS_RELAY_LOG_BACKUPS` copies (`base`, `.1`, …): disk never grows unbounded.
 
-Para entornos con consumidores que pueden quedarse sin leer, conviene ajustar
-`AIS_RELAY_SEND_TIMEOUT_SEC` (más bajo = se desaloja antes al lento). No se
-recomienda desactivar estos límites en redes con clientes no controlados.
+For environments with consumers that may stop reading, lower
+`AIS_RELAY_SEND_TIMEOUT_SEC` (lower = slow clients are evicted sooner). It is
+not recommended to disable these limits on networks with uncontrolled clients.
 
-## Seguridad
+## Security
 
-- **Sin privilegios:** la unidad systemd usa `DynamicUser=yes`, `PrivateTmp=yes`
-  y `NoNewPrivileges=yes` → el servicio **no corre como root** (usuario efímero).
-- **Token en tiempo constante:** si usas `AIS_RELAY_TOKEN`, la autenticación se
-  compara con `hmac.compare_digest` (no constante de forma ingenua).
-- **Input UDP solo loopback:** por defecto la entrada NMEA debe venir de
-  `127.0.0.1` (el decodificador local). Si se apunta a otra interfaz, el
-  proceso **aborta salvo** que se active `AIS_RELAY_UDP_ALLOW_EXTERNAL=1`
-  (para un decodificador remoto) — evita la inyección de datos en la red.
-- **CPU del replay acotada:** `snapshot_since` itera con salida temprana sin
-  copiar el anillo completo; combinado con `AIS_RELAY_MAX_REPLAY_ENTRIES` evita
-  abuso de CPU/memoria.
-- **Límites:** clientes lentos (`SEND_TIMEOUT_SEC`), nº de conexiones
-  (`MAX_CLIENTS`) y disco (`LOG_MAX_MB`/`LOG_BACKUPS`).
+- **Runs without privileges:** the systemd unit uses `DynamicUser=yes`,
+  `PrivateTmp=yes` and `NoNewPrivileges=yes` — the service is **not root**.
+- **Constant-time token:** if `AIS_RELAY_TOKEN` is used, authentication is
+  compared with `hmac.compare_digest` (not naively).
+- **Loopback-only UDP input:** by default the NMEA input must come from
+  `127.0.0.1` (the local decoder). Pointing elsewhere makes the process
+  **abort** unless `AIS_RELAY_UDP_ALLOW_EXTERNAL=1` (remote decoder) — this
+  prevents data injection on the network.
+- **Bounded replay CPU:** `snapshot_since` iterates with early exit without
+  copying the whole ring; combined with `AIS_RELAY_MAX_REPLAY_ENTRIES` it avoids
+  CPU/memory abuse.
+- **Limits:** slow clients (`SEND_TIMEOUT_SEC`), connection count
+  (`MAX_CLIENTS`) and disk (`LOG_MAX_MB`/`LOG_BACKUPS`).
 
-> Nota: el stream va **sin TLS** (NMEA en claro). En una red privada de
-> confianza es aceptable; si cruzara redes no confiables, convendría cifrarlo
-> (TLS/mTLS) o relegarlo al overlay con ACL — queda como mejora opcional.
+> Note: the stream is **without TLS** (plain NMEA). On a trusted private
+> network this is acceptable; if it ever crosses an untrusted network, consider
+> encrypting (TLS/mTLS) or restricting it to the overlay with an ACL — this is
+> an optional improvement.
 
-
-## Estructura
+## Project structure
 
 ```
-ais-relay.py                 Servicio principal (sin dependencias externas)
-deploy/ais-relay.service     Plantilla de unidad systemd
-tests/                       Clientes de prueba
+ais-relay.py                 Main service (no external dependencies)
+deploy/ais-relay.service     systemd unit template
+deploy/ais-relay.conf.example     Single configuration file template
+deploy/install.sh            Installer
+deploy/uninstall.sh          Uninstaller
+tests/                       Test clients
 ```
 
-## Licencia
+## License
 
-MIT — ver [LICENSE](LICENSE).
+MIT — see [LICENSE](LICENSE).
+
