@@ -2,9 +2,9 @@
 """Real-time AIS NMEA -> JSON streaming decoder for ais-relay-pi.
 
 Connects to the relay's TCP output, decodes every AIS message as it arrives
-(arrival order) and prints one compact JSON object per message in real time.
-It keeps streaming until interrupted with Ctrl+C. The relay itself remains a
-pure NMEA transport; decoding happens only in this client tool.
+and prints it as readable, indented JSON (ordered by arrival), separated by
+blank lines. It keeps streaming until interrupted with Ctrl+C. The relay
+itself remains a pure NMEA transport; decoding happens only in this client.
 
 Usage:
     python tools/live_ais_json.py [host] [port] [max_messages]
@@ -60,9 +60,10 @@ def main():
                 continue
             total += 1
             print(
-                json.dumps(decoded, ensure_ascii=False, separators=(",", ":")),
+                json.dumps(decoded, indent=2, ensure_ascii=False),
                 flush=True,
             )
+            print(flush=True)  # blank line between messages for readability
             if max_messages and total >= max_messages:
                 break
     except KeyboardInterrupt:
