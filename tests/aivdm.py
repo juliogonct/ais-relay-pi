@@ -59,6 +59,28 @@ def iso_now():
     return datetime.now(timezone.utc).isoformat()
 
 
+def dims_from(bits, start):
+    """Decode A/B/C/D: metres from the reference (antenna) point to bow, stern,
+    port, starboard. Unknown values are reported as None."""
+    a, b = pfx(bits, start, 9), pfx(bits, start + 9, 9)
+    c, d = pfx(bits, start + 18, 6), pfx(bits, start + 24, 6)
+
+    def conv(value, unknown):
+        return None if value == unknown else value
+
+    bow, stern = conv(a, 0), conv(b, 0)
+    port, starboard = conv(c, 0), conv(d, 0)
+    return {
+        "bow": bow,
+        "stern": stern,
+        "port": port,
+        "starboard": starboard,
+        "length": (bow + stern) if (bow is not None and stern is not None) else None,
+        "beam": (port + starboard) if (port is not None and starboard is not None) else None,
+    }
+
+
+
 def clean_position(rec):
     if rec.get("sog") == 102.3:
         rec["sog"] = None
@@ -87,7 +109,7 @@ def decode_position(bits, msg_type):
 
 
 def decode_static(bits, msg_type):
-    return {
+    rec = {
         "type": msg_type,
         "mmsi": pfx(bits, 8, 30),
         "imo": pfx(bits, 40, 30),
@@ -97,6 +119,30 @@ def decode_static(bits, msg_type):
         "draught": pfx(bits, 294, 8) / 10.0,
         "destination": text_decode(bits, 302, 120),
     }
+    dims = dims_from(bits, 240)
+    rec.update(dims)
+    rec["dims"] = {k: dims[k] for k in ("bow", "stern", "port", "starboard", "length", "beam")}
+    return rec
+
+
+def decode_type24(bits):
+    """Class-B static data: part A carries the name; part B carries callsign,
+    vendor and the antenna-dimension offsets."""
+    mmsi = pfx(bits, 8, 30)
+    partno = pfx(bits, 38, 2)
+    rec = {"type": 24, "mmsi": mmsi, "part": partno}
+    if partno == 0:
+        rec["name"] = text_decode(bits, 40, 120)
+    else:
+        rec["ship_type"] = pfx(bits, 40, 8)
+        rec["vendor_company"] = pfx(bits, 48, 18)
+        rec["vendor_model"] = pfx(bits, 66, 4)
+        rec["vendor_serial"] = pfx(bits, 70, 20)
+        rec["callsign"] = text_decode(bits, 90, 42)
+        dims = dims_from(bits, 132)
+        rec.update(dims)
+        rec["dims"] = {k: dims[k] for k in ("bow", "stern", "port", "starboard", "length", "beam")}
+    return rec
 
 
 def decode_message(bits, msg_type):
@@ -104,6 +150,8 @@ def decode_message(bits, msg_type):
         return decode_position(bits, msg_type)
     if msg_type == 5:
         return decode_static(bits, msg_type)
+    if msg_type == 24:
+        return decode_type24(bits)
     return {"type": msg_type, "mmsi": pfx(bits, 8, 30) if len(bits) >= 38 else None}
 
 

@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
-"""Live AIS static (type 5) streaming tool for ais-relay-pi.
+"""Live AIS static streaming tool for ais-relay-pi.
 
-Connects to the relay's TCP output and prints only class-A static messages
-(AIS type 5: name, IMO, callsign, ship type, draught, destination) as readable,
-indented JSON ordered by arrival. Dynamic/position and other messages are
-ignored. It streams until interrupted with Ctrl+C. The relay remains a pure
-NMEA transport; filtering/decoding happens in this client.
+Connects to the relay's TCP output and prints static AIS messages — class-A
+(type 5) and class-B (type 24) — as readable, indented JSON ordered by arrival.
+It includes the vessel's 4 antenna-dimension offsets (bow/stern/port/
+starboard), length and beam wherever the message carries them, and does not
+filter any field out. Dynamic/position and other messages are ignored. It
+streams until interrupted with Ctrl+C. The relay remains a pure NMEA
+transport; filtering/decoding happens in this client.
 
 Usage:
     python tools/statics_only.py [host] [port] [max_messages]
@@ -38,8 +40,8 @@ def lines_from(sock):
                 yield line.decode("ascii", "ignore")
 
 
-def is_static_type5(decoded):
-    return decoded is not None and decoded.get("type") == 5
+def is_static(decoded):
+    return decoded is not None and decoded.get("type") in (5, 24)
 
 
 def main():
@@ -49,7 +51,7 @@ def main():
 
     sock = socket.create_connection((host, port), timeout=10)
     sock.settimeout(None)  # stream until interrupted
-    print(f"# static (type 5) stream from {host}:{port} (Ctrl+C to stop)", file=sys.stderr)
+    print(f"# static (5/24) stream from {host}:{port} (Ctrl+C to stop)", file=sys.stderr)
 
     assembler = aivdm.FragmentAssembly()
     errors = 0
@@ -63,7 +65,7 @@ def main():
             decoded = assembler.add(item)
             if decoded is None:
                 continue
-            if not is_static_type5(decoded):
+            if not is_static(decoded):
                 continue
             total += 1
             print(json.dumps(decoded, indent=2, ensure_ascii=False), flush=True)
@@ -74,7 +76,7 @@ def main():
         pass
     finally:
         sock.close()
-    print(f"# {total} static (type 5) messages decoded, {errors} undecodable lines", file=sys.stderr)
+    print(f"# {total} static (5/24) messages decoded, {errors} undecodable lines", file=sys.stderr)
     return 0
 
 
